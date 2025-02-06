@@ -1,4 +1,6 @@
 import time
+import requests
+import os
 import re
 import json
 from selenium import webdriver
@@ -6,6 +8,7 @@ from selenium.webdriver.edge.service import Service as EdgeService
 from selenium.webdriver.common.by import By
 from selenium.webdriver.edge.options import Options as EdgeOptions  # Import Options
 from webdriver_manager.microsoft import EdgeChromiumDriverManager
+from bs4 import BeautifulSoup
 
 def setup_webdriver_headless():
     """Sets up the Edge WebDriver in headless mode."""
@@ -116,26 +119,88 @@ def process_chapter_content(driver):
     except Exception as e:
       print("Error processing chapter content", e)
 
+def get_chapter_range(chapter_data):
+    """Gets the chapter range from the user, with validation."""
+    while True:
+        chapter_range_input = input("Enter chapter range to scrape (e.g., 1-5, or press Enter to scrape all): ")
+        if not chapter_range_input:
+            start_chapter = 1
+            end_chapter = len(chapter_data)
+            print(f"Scraping all chapters ({start_chapter}-{end_chapter}).")
+            return start_chapter, end_chapter  # Return the range
+
+        try:
+            start_chapter, end_chapter = map(int, chapter_range_input.split("-"))
+            if 1 <= start_chapter <= end_chapter <= len(chapter_data):
+                print(f"Scraping chapters {start_chapter}-{end_chapter}.")
+                return start_chapter, end_chapter  # Return the range
+            else:
+                print("Invalid chapter range. Please enter a valid range within the number of chapters.")
+        except ValueError:
+            print("Invalid input. Please enter a range in the format 'start-end'.")
+
+def scrape_and_save(url, file):
+    """Scrapes content from a URL and saves it to a file."""
+    try:  # Add try-except block for requests
+        response = requests.get(url)
+        response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
+
+        soup = BeautifulSoup(response.text, 'html.parser')
+        page_text = '\n\n'.join([p.get_text(strip=True) for p in soup.find_all('p')])
+        file.write(page_text)
+    except requests.exceptions.RequestException as e:
+        print(f"Error retrieving {url}: {e}")
+    except Exception as e: # Catch other potential errors (e.g., BeautifulSoup errors)
+        print(f"Error processing {url}: {e}")
 
 def main():
     novel_url = input("Enter the novel URL: ")
     driver = setup_webdriver_headless()
+    current_dir = os.path.dirname(os.path.abspath(__file__))
 
     try:
         navigate_to_url(driver, novel_url)
 
-        if download_raw_metadata(driver): # Check if raw metadata download was successful
+        if download_raw_metadata(driver):
             process_metadata(driver)
 
         navigate_to_chapter_list(driver)
         download_raw_chapter_content(driver)
         process_chapter_content(driver)
 
+        with open(os.path.join(current_dir, "chapters.json"), "r", encoding="utf-8") as json_file:
+            chapter_data = json.load(json_file)
+
+        start_chapter, end_chapter = get_chapter_range(chapter_data)
+
+        chapter_titles = list(chapter_data.keys())
+        selected_chapters = {}
+        for i in range(start_chapter - 1, end_chapter):
+            title = chapter_titles[i]
+            url = chapter_data[title]
+            selected_chapters[title] = url
+
+        # Now you have selected_chapters, which is a dictionary of title:url pairs
+        # for the chapters the user wants to scrape.
+
+        all_chapter_file_path = os.path.join(current_dir, "all_chapters.txt") #correct path for all_chapters.txt
+
+        with open(all_chapter_file_path, 'w', encoding='utf-8') as file:
+            progress = 1
+            for title, url in selected_chapters.items():  # Iterate through selected chapters
+                file.write(f'\n###\n{title}\n') #write the title instead of chapter count
+
+                scrape_and_save(url, file)
+                print(f"Progress: {progress}/{len(selected_chapters)}")
+
+                progress += 1
+                time.sleep(1)  # Rate limit
+
     except Exception as e:
         print("Error during scraping:", e)
 
     finally:
-        if 'driver' in locals(): # Check if driver was initialized
+        if 'driver' in locals():
             driver.quit()
 
 if __name__ == "__main__":
